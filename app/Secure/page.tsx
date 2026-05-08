@@ -1,0 +1,289 @@
+'use client';
+
+import React, { useState, useRef } from 'react';
+import { Shield, UploadCloud, Lock, Unlock, Download, ArrowLeft, CheckCircle } from 'lucide-react';
+
+import Link from 'next/link';
+
+export default function SecureTool() {
+  const [mode, setMode] = useState<'encode' | 'decode'>('encode');
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [secretMessage, setSecretMessage] = useState('');
+  const [decodedMessage, setDecodedMessage] = useState<string | null>(null);
+  const [outputImage, setOutputImage] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // --- Core Steganography Logic (Simple LSB Engine) ---
+  const DELIMITER = '|||END|||';
+
+  // Helper: Convert Text to Binary
+  const textToBinary = (text: string) => {
+    return text.split('').map(char => 
+      char.charCodeAt(0).toString(2).padStart(8, '0')
+    ).join('');
+  };
+
+  // Helper: Convert Binary to Text
+  const binaryToText = (binary: string) => {
+    let text = '';
+    for (let i = 0; i < binary.length; i += 8) {
+      const byte = binary.slice(i, i + 8);
+      text += String.fromCharCode(parseInt(byte, 2));
+    }
+    return text;
+  };
+
+  // Handle Image Upload
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      setPreviewUrl(URL.createObjectURL(selectedFile));
+      // Reset states on new upload
+      setOutputImage(null);
+      setDecodedMessage(null);
+      setError(null);
+    }
+  };
+
+  // Encode Text into Image (LSB Method)
+  const handleEncode = () => {
+    if (!file || !secretMessage) return setError('Please provide an image and a secret message.');
+    setIsProcessing(true);
+    setError(null);
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      // Set canvas size to match image
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+
+      // Get pixel data
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imgData.data;
+
+      // Prepare binary message with delimiter
+      const binaryMessage = textToBinary(secretMessage + DELIMITER);
+      
+      // Check capacity (3 channels per pixel: R, G, B. Skipping Alpha)
+      if (binaryMessage.length > (data.length / 4) * 3) {
+        setIsProcessing(false);
+        return setError('Image is too small to hold this message. Choose a larger image or a shorter message.');
+      }
+
+      let bitIndex = 0;
+      for (let i = 0; i < data.length; i++) {
+        // Skip alpha channel (every 4th value) to prevent visual transparency changes
+        if ((i + 1) % 4 === 0) continue; 
+
+        if (bitIndex < binaryMessage.length) {
+          // Clear the Least Significant Bit (LSB) and set it to our message bit
+          data[i] = (data[i] & ~1) | parseInt(binaryMessage[bitIndex]);
+          bitIndex++;
+        } else {
+          break; // Stop when message is fully injected
+        }
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+      
+      // IMPORTANT: Must export as PNG. JPEG compression destroys the modified LSBs.
+      setOutputImage(canvas.toDataURL('image/png'));
+      setIsProcessing(false);
+    };
+    img.src = previewUrl as string;
+  };
+
+  // Decode Text from Image (LSB Method)
+  const handleDecode = () => {
+    if (!file) return setError('Please upload an encoded image.');
+    setIsProcessing(true);
+    setError(null);
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imgData.data;
+
+      let binaryMessage = '';
+      
+      // Extract the LSB from every color channel
+      for (let i = 0; i < data.length; i++) {
+        if ((i + 1) % 4 === 0) continue; // Skip alpha
+        binaryMessage += (data[i] & 1).toString(); // Get the last bit
+      }
+
+      // Convert massive binary string back to text
+      const extractedText = binaryToText(binaryMessage);
+      
+      // Look for our specific stopping point
+      const delimiterIndex = extractedText.indexOf(DELIMITER);
+
+      if (delimiterIndex !== -1) {
+        setDecodedMessage(extractedText.substring(0, delimiterIndex));
+      } else {
+        setError('No hidden message found. Make sure this is an uncompressed PNG generated by SteganoVault.');
+      }
+      setIsProcessing(false);
+    };
+    img.src = previewUrl as string;
+  };
+
+  return (
+    <div className="min-h-screen bg-[#09090b] text-slate-200 font-sans selection:bg-fuchsia-500/30 pb-20">
+      {/* Background Blobs */}
+      <div className="fixed top-[-10%] left-[-10%] w-[40vw] h-[40vw] rounded-full bg-fuchsia-600/10 blur-[120px] pointer-events-none" />
+      <div className="fixed bottom-[-10%] right-[-10%] w-[40vw] h-[40vw] rounded-full bg-cyan-600/10 blur-[120px] pointer-events-none" />
+
+      {/* Navigation */}
+      <nav className="relative z-10 flex items-center justify-between px-6 py-6 max-w-5xl mx-auto mb-8">
+        <div className="flex items-center gap-2">
+          <Shield className="w-6 h-6 text-fuchsia-500" />
+          <span className="text-xl font-bold tracking-wider text-white">SteganoVault</span>
+        </div>
+        <Link href="/" className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors">
+          <ArrowLeft className="w-4 h-4" /> Back to Home
+        </Link>
+      </nav>
+
+      {/* Main App Container */}
+      <main className="relative z-10 max-w-3xl mx-auto px-6">
+        <div className="bg-[#13111c] border border-white/10 rounded-3xl p-6 md:p-10 shadow-2xl backdrop-blur-xl">
+          
+          {/* Header & Tabs */}
+          <div className="flex flex-col items-center mb-10">
+            <h1 className="text-3xl font-bold text-white mb-6">Secure Vault Engine</h1>
+            <div className="flex bg-[#1a1b26] p-1 rounded-full border border-white/5">
+              <button
+                onClick={() => { setMode('encode'); setOutputImage(null); setDecodedMessage(null); setError(null); }}
+                className={`flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-bold transition-all ${mode === 'encode' ? 'bg-fuchsia-500 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Lock className="w-4 h-4" /> Encode Data
+              </button>
+              <button
+                onClick={() => { setMode('decode'); setOutputImage(null); setDecodedMessage(null); setError(null); }}
+                className={`flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-bold transition-all ${mode === 'decode' ? 'bg-cyan-500 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Unlock className="w-4 h-4" /> Decode Data
+              </button>
+            </div>
+          </div>
+
+          {/* Upload Area */}
+          <div className="mb-8">
+            <label className="flex flex-col items-center justify-center w-full h-48 border-2 border-dashed border-white/20 rounded-2xl cursor-pointer hover:border-fuchsia-500/50 hover:bg-white/5 transition-all bg-[#0d0b14] overflow-hidden relative group">
+              {previewUrl ? (
+                <div className="relative w-full h-full">
+                  <img src={previewUrl} alt="Preview" className="w-full h-full object-contain p-2" />
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <span className="text-white font-medium flex items-center gap-2"><UploadCloud className="w-5 h-5"/> Change Image</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                  <UploadCloud className="w-10 h-10 text-slate-400 mb-3 group-hover:text-fuchsia-400 transition-colors" />
+                  <p className="mb-2 text-sm text-slate-300"><span className="font-semibold text-fuchsia-400">Click to upload</span> or drag and drop</p>
+                  <p className="text-xs text-slate-500">PNG, JPG (Max 5MB)</p>
+                </div>
+              )}
+              <input type="file" accept="image/png, image/jpeg" className="hidden" onChange={handleFileUpload} />
+            </label>
+          </div>
+
+          {/* Dynamic Content based on Mode */}
+          {mode === 'encode' ? (
+            <div className="space-y-6">
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">Secret Message</label>
+                <textarea
+                  value={secretMessage}
+                  onChange={(e) => setSecretMessage(e.target.value)}
+                  placeholder="Type the highly confidential message here..."
+                  className="w-full h-32 bg-[#1a1b26] border border-white/10 rounded-xl p-4 text-white placeholder-slate-500 focus:outline-none focus:border-fuchsia-500 transition-colors resize-none"
+                />
+              </div>
+              <button 
+                onClick={handleEncode}
+                disabled={isProcessing || !file || !secretMessage}
+                className="w-full py-4 rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 text-white font-bold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isProcessing ? 'Processing Image...' : <><Lock className="w-5 h-5" /> Embed Secret into Image</>}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <button 
+                onClick={handleDecode}
+                disabled={isProcessing || !file}
+                className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-bold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isProcessing ? 'Extracting Data...' : <><Unlock className="w-5 h-5" /> Extract Secret Message</>}
+              </button>
+
+              {decodedMessage && (
+                <div className="p-6 border border-cyan-500/30 bg-[#0d0b14] rounded-xl shadow-[0_0_15px_rgba(6,182,212,0.1)]">
+                  <div className="flex items-center gap-2 mb-3 border-b border-white/5 pb-3">
+                    <CheckCircle className="w-5 h-5 text-cyan-400" />
+                    <p className="text-sm text-cyan-400 font-bold uppercase tracking-wider">Decrypted Message Successfully</p>
+                  </div>
+                  <p className="text-white font-mono break-words whitespace-pre-wrap">{decodedMessage}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Error Message Alert */}
+          {error && (
+            <div className="mt-6 p-4 border border-red-500/30 bg-red-500/10 rounded-xl text-red-400 text-sm text-center">
+              {error}
+            </div>
+          )}
+
+          {/* Success / Download Area (Encode Mode) */}
+          {outputImage && mode === 'encode' && (
+            <div className="mt-8 p-6 border border-fuchsia-500/30 bg-[#0d0b14] rounded-2xl flex flex-col items-center">
+              <div className="w-12 h-12 bg-green-500/20 rounded-full flex items-center justify-center mb-4">
+                <Lock className="w-6 h-6 text-green-400" />
+              </div>
+              <h3 className="text-white font-bold mb-2">Message Encoded Successfully!</h3>
+              <p className="text-sm text-slate-400 text-center mb-6">Your secret message is now embedded inside the image pixels. Download the secured PNG file below.</p>
+              <a 
+                href={outputImage} 
+                download="HD-image.png"
+                className="px-8 py-3 rounded-xl bg-white text-black font-bold hover:bg-slate-200 transition-colors flex items-center gap-2"
+              >
+                <Download className="w-4 h-4" /> Download Secured Image
+              </a>
+              <p className="text-xs text-slate-500 mt-4 text-center">
+                * Note: Always share this via Email, Google Drive, or as a Document. Social media apps (like WhatsApp/Instagram) compress images and will destroy the hidden data.
+              </p>
+            </div>
+          )}
+
+          {/* Hidden Canvas used for local browser image processing */}
+          <canvas ref={canvasRef} className="hidden" />
+          
+        </div>
+      </main>
+    </div>
+  );
+}
